@@ -1,0 +1,25 @@
+# Build directories
+build/
+bin/
+obj/
+
+# Breakpad minidumps and OS core dumps
+dumps/
+*.dmp
+*.core
+
+# Compiled binaries
+crash-sig-gen
+app_null_ptr
+app_div_zero
+core_to_md
+
+# OS/Editor generated files
+.DS_Store
+.vscode/
+*.swp
+*~
+.fuse_hidden*
+
+# Docker build caches (if any)
+.dockerignore

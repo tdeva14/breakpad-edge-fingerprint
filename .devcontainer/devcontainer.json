@@ -1,0 +1,29 @@
+{
+  "name": "Edge-Fingerprinting (arm32v7 / armhf)",
+  "build": {
+    "context": "..",
+    "dockerfile": "Dockerfile"
+  },
+  "workspaceFolder": "/work",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/work,type=bind,consistency=cached",
+  "runArgs": [
+    "--platform=linux/arm/v7"
+  ],
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools",
+        "twxs.cmake"
+      ],
+      "settings": {
+        "terminal.integrated.defaultProfile.linux": "bash",
+        "cmake.buildDirectory": "${workspaceFolder}/build",
+        "C_Cpp.default.compilerPath": "/usr/bin/g++",
+        "C_Cpp.default.intelliSenseMode": "linux-gcc-arm"
+      }
+    }
+  },
+  "remoteUser": "root",
+  "postStartCommand": "echo '=== Edge-Fingerprinting armhf container ready ===' && uname -m"
+}
