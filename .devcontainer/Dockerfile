@@ -1,9 +1,9 @@
 # ============================================================
 # Edge-Fingerprinting Dev Container
-# Base: arm32v7/ubuntu:20.04  (QEMU-emulated on ARM64 macOS)
+# Base: ubuntu:20.04
 # Builds Google Breakpad v2.1.0 + LSS from source
 # ============================================================
-FROM arm32v7/ubuntu:20.04
+FROM ubuntu:20.04
 
 # Avoid interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -27,6 +27,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     binutils \
     file \
+    zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 
@@ -58,7 +59,6 @@ RUN mkdir -p /opt/breakpad/src/third_party/lss \
 # ------------------------------------------------------------------
 WORKDIR /opt/breakpad
 RUN ./configure --prefix=/usr/local \
-                --disable-tools \
     && make -j$(nproc) \
     && make install
 

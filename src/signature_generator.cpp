@@ -65,6 +65,56 @@ static std::string normalise_build_id(const std::string& raw) {
     return id.empty() ? "UNKNOWN_BUILD_ID" : id;
 }
 
+// Extract the Program Counter from a MinidumpContext in an
+// architecture-agnostic way. Returns true on success, false if the
+// architecture is not supported or the raw context is missing.
+static bool GetProgramCounter(const google_breakpad::MinidumpContext* ctx,
+                              uint64_t& ip_out) {
+    if (!ctx) {
+        return false;
+    }
+
+    const uint32_t cpu_type = ctx->GetContextCPU();
+
+    switch (cpu_type) {
+        case MD_CONTEXT_ARM: {
+            const MDRawContextARM* raw = ctx->GetContextARM();
+            if (!raw) return false;
+            // ARM 32-bit: register 15 is the Program Counter (PC)
+            ip_out = static_cast<uint64_t>(raw->iregs[MD_CONTEXT_ARM_REG_PC]);
+            return true;
+        }
+
+        case MD_CONTEXT_ARM64: {
+            const MDRawContextARM64* raw = ctx->GetContextARM64();
+            if (!raw) return false;
+            // ARM64: PC is stored as the last entry in iregs
+            ip_out = static_cast<uint64_t>(raw->iregs[MD_CONTEXT_ARM64_REG_PC]);
+            return true;
+        }
+
+        case MD_CONTEXT_X86: {
+            const MDRawContextX86* raw = ctx->GetContextX86();
+            if (!raw) return false;
+            // x86 32-bit: EIP
+            ip_out = static_cast<uint64_t>(raw->eip);
+            return true;
+        }
+
+        case MD_CONTEXT_AMD64: {
+            const MDRawContextAMD64* raw = ctx->GetContextAMD64();
+            if (!raw) return false;
+            // x86_64: RIP
+            ip_out = static_cast<uint64_t>(raw->rip);
+            return true;
+        }
+
+        default:
+            // Unsupported / unexpected architecture
+            return false;
+    }
+}
+
 // ── entry point ──────────────────────────────────────────────────────────────
 
 // Helper to get Signal Number (from Exception Stream)
@@ -129,22 +179,13 @@ int main(int argc, char** argv) {
         return EXIT_FAILURE;
     }
 
-    // ── 4. Extract the Program Counter for ARM 32-bit ────────────────────────
-    //  MD_CONTEXT_ARM context type; PC lives in iregs[15] (MD_CONTEXT_ARM_REG_PC = 15)
-    if (ctx->GetContextCPU() != MD_CONTEXT_ARM) {
-        std::cerr << "Error: Unexpected CPU context (expected ARM 0x" << std::hex << MD_CONTEXT_ARM
-                  << ", got 0x" << ctx->GetContextCPU() << std::dec << ").\n";
+    // ── 4. Extract the Program Counter in an arch-agnostic way ──────────────
+    uint64_t ip = 0;
+    if (!GetProgramCounter(ctx, ip)) {
+        std::cerr << "Error: Unsupported or invalid CPU context (0x"
+                  << std::hex << ctx->GetContextCPU() << std::dec << ").\n";
         return EXIT_FAILURE;
     }
-
-    const MDRawContextARM* raw_ctx = ctx->GetContextARM();
-    if (!raw_ctx) {
-        std::cerr << "ERROR: GetContextARM() returned null.\n";
-        return EXIT_FAILURE;
-    }
-
-    // ARM 32-bit: register 15 is the Program Counter (PC / Instruction Pointer)
-    const uint32_t ip = raw_ctx->iregs[MD_CONTEXT_ARM_REG_PC];
 
     // ── 5. Walk module list to find the owning module ────────────────────────
     google_breakpad::MinidumpModuleList* module_list = dump.GetModuleList();
@@ -161,8 +202,7 @@ int main(int argc, char** argv) {
         const uint64_t base = mod->base_address();
         const uint64_t size = mod->size();
 
-        if (static_cast<uint64_t>(ip) >= base &&
-            static_cast<uint64_t>(ip) <  base + size) {
+        if (ip >= base && ip < base + size) {
             faulting_module = mod;
             break;
         }
@@ -176,7 +216,7 @@ int main(int argc, char** argv) {
 
     // ── 6. Compute ASLR-stable relative offset ───────────────────────────────
     const uint64_t base_addr = faulting_module->base_address();
-    const uint64_t offset    = static_cast<uint64_t>(ip) - base_addr;
+    const uint64_t offset    = ip - base_addr;
 
     // ── 7. Extract Build-ID ───────────────────────────────────────────────────
     // code_identifier() returns the ELF Build-ID as a hex string on Linux.
