@@ -1,168 +1,126 @@
 # crash-sig-gen
 
-A surgical, lightweight C++ utility that reads a Breakpad `.dmp` minidump and emits a single deterministic **Crash DNA** string for on-device deduplication:
+A lightweight C++ utility that reads a Breakpad `.dmp` file and emits a single, deterministic **Crash DNA** string for on-device crash deduplication:
 
 ```
 <BuildID>_<Signal>_<ModuleName>_0x<HexOffset>
 ```
 
----
-
-## Table of Contents
-
-1. [Architecture](#architecture)
-2. [Prerequisites — Host Setup (QEMU)](#prerequisites--host-setup-qemu)
-3. [Build the Dev Container](#build-the-dev-container)
-4. [Build the Project](#build-the-project)
-5. [Run Verification](#run-verification)
-6. [Output Format](#output-format)
-7. [ASLR Stability Proof](#aslr-stability-proof)
-8. [Project Structure](#project-structure)
+The code is derived from Breakpad's `minidump_stackwalk`, but only looks at the top frame.
 
 ---
 
-## Architecture
+## How it works
+
+High-level flow in `src/signature_generator.cpp`:
 
 ```
-crash-sig-gen  (crash DNA generator)
+crash-sig-gen
 │
-├── google_breakpad::Minidump::Read()       — open .dmp file
-├── MinidumpException::GetThread()          — faulting thread
-├── MinidumpThread::GetContext()            — CPU register state
-│   └── MDRawContextARM.iregs[15]          — PC (no Stackwalker class used)
-├── MinidumpModuleList  iteration           — find owning module
-│   └── offset = PC − module.base_address  — ASLR-stable
-├── module.code_identifier()               — GNU ELF Build-ID
-└── exception_record.exception_code        — Linux signal number
+├─ Minidump::Read()                      # open .dmp
+├─ MinidumpException / MinidumpThread    # faulting thread
+├─ MinidumpThread::GetContext()          # CPU context
+│   └─ GetProgramCounter()               # IP from CPU-specific context
+│      • ARM32: MDRawContextARM.iregs[MD_CONTEXT_ARM_REG_PC]
+│      • ARM64: MDRawContextARM64.iregs[MD_CONTEXT_ARM64_REG_PC]
+│      • x86:   MDRawContextX86.eip
+│      • x86_64:MDRawContextAMD64.rip
+├─ MinidumpModuleList                    # find owning module for IP
+│   └─ offset = IP − module.base_address # ASLR-stable offset
+├─ module.code_identifier()              # Build-ID (hex)
+└─ exception_record.exception_code       # Linux signal number
+```
+
+The utility runs on any host where Breakpad is installed and can process
+minidumps from ARM (32/64-bit) and x86 (32/64-bit) targets.
+
+---
+
+## Build
+
+Prerequisites on the build machine:
+
+- A C++14 compiler (e.g. `g++` or `clang++`).
+- Breakpad installed under `/usr/local` (headers in `/usr/local/include/breakpad`,
+  libraries in `/usr/local/lib`).
+
+### Simple build with CMake
+
+From the repository root:
+
+```bash
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build
+```
+
+This produces the `crash-sig-gen` binary (and, if `-DBUILD_TESTS=ON`, the test apps).
+
+### One-shot local build (matches verify.sh)
+
+```bash
+g++ -std=c++14 -g \
+    -I/usr/local/include/breakpad \
+    src/signature_generator.cpp \
+    -L/usr/local/lib -lbreakpad -lpthread -ldl \
+    -o crash-sig-gen
 ```
 
 ---
 
-## Prerequisites — Host Setup (QEMU)
+## Test apps and minidumps
 
-Run **once** on your ARM64 macOS host to register QEMU binary translators so
-Docker can execute 32-bit ARM (armhf) containers:
+The `/tests` directory contains small crash-generating programs wired to
+Breakpad's `ExceptionHandler` to produce minidumps in `/tmp`:
 
-```bash
-docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
-```
+- `tests/app_null_ptr.cpp`  – SIGSEGV-style crash.
+- `tests/app_div_zero.cpp`  – SIGFPE-style crash.
 
-Verify QEMU is active:
+Running `verify.sh` will:
 
-```bash
-docker run --rm --platform linux/arm/v7 arm32v7/ubuntu:20.04 uname -m
-# Expected output: armv7l
-```
+1. Compile `crash-sig-gen`, `app_null_ptr`, and `app_div_zero` with `g++`.
+2. Run each test app to generate a `.dmp` under `/tmp`.
+3. Call `crash-sig-gen` on each dump and validate the output format.
+4. Run `app_null_ptr` twice to prove the offset is ASLR-stable.
+5. Copy the generated dumps into `tests/minidumps/` as small reusable fixtures
+   (`null_ptr_1.dmp`, `null_ptr_2.dmp`, `div_zero_1.dmp`).
 
----
-
-## Build the Dev Container
-
-```bash
-# From the repository root
-docker build \
-  --platform linux/arm/v7 \
-  -t edge-fp \
-  .devcontainer/
-```
-
-> **Note:** The first build downloads and compiles Breakpad from source inside
-> the 32-bit container — this takes ~10–15 minutes on the first run. Subsequent
-> builds use Docker's layer cache.
-
----
-
-## Build the Project
-
-### Option A — VS Code Dev Containers
-
-Open the repository in VS Code and select **"Reopen in Container"** from the
-command palette. The devcontainer will build automatically.
-
-### Option B — Manual Docker
+To run the verification locally (with Breakpad already installed):
 
 ```bash
-# Without test apps
-docker run --rm \
-  --platform linux/arm/v7 \
-  -v "$(pwd):/work" \
-  edge-fp \
-  bash -c "cmake -S /work -B /work/build -DCMAKE_BUILD_TYPE=Release && \
-           cmake --build /work/build"
-
-# With test apps
-docker run --rm \
-  --platform linux/arm/v7 \
-  -v "$(pwd):/work" \
-  edge-fp \
-  bash -c "cmake -S /work -B /work/build -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTS=ON && \
-           cmake --build /work/build"
+bash verify.sh
 ```
 
 ---
 
-## Run Verification
-
-```bash
-docker run --rm \
-  --platform linux/arm/v7 \
-  -v "$(pwd):/work" \
-  edge-fp \
-  bash /work/verify.sh
-```
-
----
-
-## Output Format
+## Output format
 
 ```
 <BuildID>_<Signal>_<ModuleName>_0x<HexOffset>
 ```
 
-| Field        | Description                                            | Example           |
-|:-------------|:-------------------------------------------------------|:------------------|
-| `BuildID`    | GNU ELF Build ID (hex, from `.note.gnu.build-id`)      | `A3B1C2D4E5F6…`   |
-| `Signal`     | Linux signal number (decimal)                          | `11` (SIGSEGV)    |
-| `ModuleName` | Basename of the crashing binary/library                | `app_null_ptr`    |
-| `HexOffset`  | `PC − module_base` in hex  (ASLR-stable)               | `0x1a2b`          |
+- `BuildID`   – ELF Build-ID as hex (from `code_identifier()`).
+- `Signal`    – Linux signal number (decimal).
+- `ModuleName`– Basename of the crashing binary or shared object.
+- `HexOffset` – `IP − module_base_address` in hex, ASLR-stable.
 
-### Example output
+Example:
 
 ```
 A3B1C2D4E5F6001122334455667788990_11_app_null_ptr_0x1a2c
-B9F2E3C1D4A5881100223344556677880_8_app_div_zero_0x203e
 ```
 
 ---
 
-## ASLR Stability Proof
+## Layout
 
-Even though Linux ASLR randomises load addresses, the **relative offset**
-`PC − base_address` stays constant for the same crash site:
-
-```
-Run 1:  base=0x10000  PC=0x11a2c  → offset=0x1a2c
-Run 2:  base=0x40000  PC=0x41a2c  → offset=0x1a2c   ✓ identical
-```
-
-`verify.sh` automatically runs `app_null_ptr` twice and asserts the offset
-field is the same in both Crash DNA strings.
-
----
-
-## Project Structure
-
-```
-breakpad-edge-fingerprint/
-├── .devcontainer/
-│   ├── Dockerfile          # arm32v7/ubuntu:20.04, Breakpad compiled from source
-│   └── devcontainer.json   # VS Code Remote Containers config
-├── src/
-│   └── signature_generator.cpp  # crash-sig-gen core (no Stackwalker)
-├── tests/
-│   ├── app_null_ptr.cpp    # SIGSEGV test app
-│   └── app_div_zero.cpp    # SIGFPE  test app
-├── CMakeLists.txt          # BUILD_TESTS=ON for test apps; strip post-build
-├── verify.sh               # End-to-end verification script
-└── requirements.md
+```text
+src/
+  signature_generator.cpp   # crash-sig-gen implementation
+tests/
+  app_null_ptr.cpp          # SIGSEGV test app
+  app_div_zero.cpp          # SIGFPE test app
+  minidumps/                # small .dmp fixtures populated by verify.sh
+CMakeLists.txt               # build targets and optional tests
+verify.sh                    # end-to-end verification script
+requirements.md              # high-level project requirements
 ```
