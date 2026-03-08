@@ -1,9 +1,6 @@
-# Edge-Fingerprinting — `crash-sig-gen`
+# crash-sig-gen
 
-> **TRS Project** · 32-bit ARM (armhf) RDK · Breakpad v2.1.0
-
-A surgical, lightweight C++ utility that reads a Breakpad `.dmp` minidump and
-emits a single deterministic **Crash DNA** string for on-device deduplication:
+A surgical, lightweight C++ utility that reads a Breakpad `.dmp` minidump and emits a single deterministic **Crash DNA** string for on-device deduplication:
 
 ```
 <BuildID>_<Signal>_<ModuleName>_0x<HexOffset>
