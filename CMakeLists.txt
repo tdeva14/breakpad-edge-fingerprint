@@ -78,5 +78,38 @@ if(BUILD_TESTS)
     endfunction()
 
     add_crash_test(app_null_ptr app_null_ptr.cpp)
-    add_crash_test(app_div_zero app_div_zero.cpp)
+
+    # ── crash_lib + app_libc_crash ────────────────────────────────────────────
+    # Build crash_lib as a shared library so it gets its own ELF Build-ID.
+    # The crash happens inside the library (double-free in level3()) so
+    # crash-sig-gen will report crash_lib's Build-ID and module name.
+    add_library(crash_lib SHARED tests/crash_lib.cpp)
+
+    target_include_directories(crash_lib PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+    )
+
+    add_custom_command(TARGET crash_lib POST_BUILD
+        COMMAND strip --strip-all "$<TARGET_FILE:crash_lib>"
+        COMMENT "Stripping crash_lib (strip --strip-all)"
+    )
+
+    add_executable(app_libc_crash tests/app_libc_crash.cpp)
+
+    target_include_directories(app_libc_crash PRIVATE
+        "${BREAKPAD_INCLUDE_DIR}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+    )
+
+    target_link_libraries(app_libc_crash PRIVATE
+        "${BREAKPAD_CLIENT_LIB}"
+        crash_lib
+        pthread
+        dl
+    )
+
+    add_custom_command(TARGET app_libc_crash POST_BUILD
+        COMMAND strip --strip-all "$<TARGET_FILE:app_libc_crash>"
+        COMMENT "Stripping app_libc_crash (strip --strip-all)"
+    )
 endif()
