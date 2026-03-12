@@ -1,9 +1,10 @@
 cmake_minimum_required(VERSION 3.10)
 
-# Fix for CMake 3.16 + QEMU: skip full link during compiler identification
+# Skip full-link compiler identification test — required for cross-compilation
+# environments where the build host cannot execute the target binary.
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 
-project(edge-fingerprint LANGUAGES CXX)
+project(minidump-stackwalk-lite LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -35,17 +36,35 @@ message(STATUS "Breakpad processor lib : ${BREAKPAD_PROCESSOR_LIB}")
 message(STATUS "Breakpad client lib    : ${BREAKPAD_CLIENT_LIB}")
 message(STATUS "Breakpad include dir   : ${BREAKPAD_INCLUDE_DIR}")
 
+# ─── libdisasm (needed by breakpad's disassembler_x86 for exploitability) ─────
+# On x86/x86_64: link the real library if present (apt: libdisasm-dev).
+# On ARM32/ARM64: library is unavailable; compile no-op stubs instead.
+# Using stubs is always safe because we construct MinidumpProcessor without
+# exploitability analysis, so the x86 disassembler is never called at runtime.
+find_library(LIBDISASM_LIB NAMES disasm)
+if(LIBDISASM_LIB)
+    message(STATUS "libdisasm found        : ${LIBDISASM_LIB}")
+    set(DISASM_SOURCES "")
+    set(DISASM_LIBS    "${LIBDISASM_LIB}")
+else()
+    message(STATUS "libdisasm not found — compiling no-op stubs (non-x86 target)")
+    set(DISASM_SOURCES "src/disasm_stub.c")
+    set(DISASM_LIBS    "")
+endif()
+
 # ─── crash-sig-gen (the core utility) ─────────────────────────────────────────
-add_executable(crash-sig-gen
-    src/signature_generator.cpp
+add_executable(minidump_stackwalk_lite
+    src/minidump_stackwalk_lite.cpp
+    ${DISASM_SOURCES}
 )
 
-target_include_directories(crash-sig-gen PRIVATE
+target_include_directories(minidump_stackwalk_lite PRIVATE
     "${BREAKPAD_INCLUDE_DIR}"
 )
 
-target_link_libraries(crash-sig-gen PRIVATE
+target_link_libraries(minidump_stackwalk_lite PRIVATE
     "${BREAKPAD_PROCESSOR_LIB}"
+    ${DISASM_LIBS}
     pthread
     dl
 )
@@ -70,7 +89,7 @@ if(BUILD_TESTS)
             dl
         )
 
-        # strip --strip-all   - simulates production RDK (no debug symbols)
+        # Strip debug symbols to simulate a production environment.
         add_custom_command(TARGET ${target} POST_BUILD
             COMMAND strip --strip-all "$<TARGET_FILE:${target}>"
             COMMENT "Stripping ${target} (strip --strip-all)"
@@ -82,7 +101,7 @@ if(BUILD_TESTS)
     # ── crash_lib + app_libc_crash ────────────────────────────────────────────
     # Build crash_lib as a shared library so it gets its own ELF Build-ID.
     # The crash happens inside the library (double-free in level3()) so
-    # crash-sig-gen will report crash_lib's Build-ID and module name.
+    # minidump_stackwalk_lite will report crash_lib's Build-ID and module name.
     add_library(crash_lib SHARED tests/crash_lib.cpp)
 
     target_include_directories(crash_lib PRIVATE

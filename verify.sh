@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# verify.sh  —  Edge-Fingerprinting end-to-end verification
+# verify.sh  —  minidump_stackwalk_lite end-to-end verification
 #
 # Test apps:
 #   app_null_ptr         — SIGSEGV (11) via null dereference, 3 threads
@@ -9,9 +9,9 @@
 #
 # Steps:
 #   1. Build all binaries with g++
-#   2. Run each crash app, collect the .dmp, feed it to crash-sig-gen
-#   3. Validate Crash DNA format for each test
-#   4. Run app_null_ptr twice to prove the offset is ASLR-stable
+#   2. Run each crash app, collect the .dmp, feed it to minidump_stackwalk_lite
+#   3. Validate crash fingerprint format for each test
+#   4. Run app_null_ptr twice to prove the top-frame offset is ASLR-stable
 #
 # Run locally (with Breakpad installed under /usr/local):
 #   bash verify.sh
@@ -36,12 +36,23 @@ FAILURES=0
 # ─── Step 1: Build ───────────────────────────────────────────────────────────
 banner "Step 1: Direct Compilation (g++)"
 
-info "Compiling Core Utility: crash-sig-gen…"
-g++ -std=c++14 -g \
-    -I/usr/local/include/breakpad \
-    "${SCRIPT_DIR}/src/signature_generator.cpp" \
-    -L/usr/local/lib -lbreakpad -lpthread -ldl \
-    -o "crash-sig-gen"
+info "Compiling Core Utility: minidump_stackwalk_lite…"
+# Auto-detect libdisasm: link it on x86/x86_64 where it is packaged;
+# fall back to no-op stubs on ARM32/ARM64 where it is not available.
+if ldconfig -p 2>/dev/null | grep -q 'libdisasm\.so'; then
+    g++ -std=c++14 -g \
+        -I/usr/local/include/breakpad \
+        "${SCRIPT_DIR}/src/minidump_stackwalk_lite.cpp" \
+        -L/usr/local/lib -lbreakpad -ldisasm -lpthread -ldl \
+        -o "minidump_stackwalk_lite"
+else
+    g++ -std=c++14 -g \
+        -I/usr/local/include/breakpad \
+        "${SCRIPT_DIR}/src/minidump_stackwalk_lite.cpp" \
+        "${SCRIPT_DIR}/src/disasm_stub.c" \
+        -L/usr/local/lib -lbreakpad -lpthread -ldl \
+        -o "minidump_stackwalk_lite"
+fi
 
 info "Compiling Test App: app_null_ptr…"
 g++ -std=c++14 -g \
@@ -71,7 +82,7 @@ g++ -std=c++14 -g \
     -o "app_libc_crash"
 strip --strip-all "app_libc_crash"
 
-CRASH_SIG="./crash-sig-gen"
+CRASH_SIG="./minidump_stackwalk_lite"
 APP_NULL="./app_null_ptr"
 APP_LIBC="./app_libc_crash"
 
@@ -110,7 +121,8 @@ run_crash() {
 }
 
 # ─── Helper: validate Crash DNA format ───────────────────────────────────────
-SIGNATURE_REGEX='^[0-9A-Fa-f]+_[0-9]+_[^_]+_0x[0-9a-fA-F]+$'
+# Format: <BuildID>|<Signal>|<Frame0>|<Frame1>|...  (all fields are pipe-separated)
+SIGNATURE_REGEX='^[0-9A-Fa-f]+\|[0-9]+\|.+'
 
 validate_sig() {
     local sig="$1" label="$2"
@@ -193,15 +205,17 @@ if [[ -f "${DMP_NULL2}" ]]; then
     SIG_NULL2=$( "${CRASH_SIG}" "${DMP_NULL2}" 2>&1 || true )
 fi
 
-extract_offset() { echo "$1" | cut -d_ -f4; }
+# Extract the first frame (Frame0) from a Crash DNA string.
+# Format: BUILDHEX|SIGNAL|Frame0|Frame1|... → field 3
+extract_first_frame() { echo "$1" | cut -d'|' -f3; }
 
 if [[ -n "${SIG_NULL}" && -n "${SIG_NULL2}" ]]; then
-    OFF1="$(extract_offset "${SIG_NULL}")"
-    OFF2="$(extract_offset "${SIG_NULL2}")"
-    if [[ "${OFF1}" == "${OFF2}" ]]; then
-        pass "ASLR-stable offset: run1=${OFF1}  run2=${OFF2}"
+    FRAME1="$(extract_first_frame "${SIG_NULL}")"
+    FRAME2="$(extract_first_frame "${SIG_NULL2}")"
+    if [[ "${FRAME1}" == "${FRAME2}" ]]; then
+        pass "ASLR-stable top frame: run1=${FRAME1}  run2=${FRAME2}"
     else
-        fail "Offset changed between runs! run1=${OFF1}  run2=${OFF2}"
+        fail "Top frame changed between runs! run1=${FRAME1}  run2=${FRAME2}"
     fi
 else
     info "Skipping ASLR check (missing signatures from one or both runs)"
